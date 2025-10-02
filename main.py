@@ -1,4 +1,6 @@
 import os
+from dotenv import load_dotenv
+load_dotenv() # This loads the variables from your .env file
 import resend
 import json
 import random
@@ -23,7 +25,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 # Resend Email
-RESEND_API_KEY = "re_gG6y5Xbj_GiLxsXmXfgtoqRKNnMrbtJpZ"  # Replace with your actual key
+RESEND_API_KEY = os.getenv("RESEND_API_KEY")  # Replace with your actual key
 resend.api_key = RESEND_API_KEY
 
 # Authentication
