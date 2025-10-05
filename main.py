@@ -19,7 +19,7 @@ from sqlalchemy.ext.declarative import declarative_base
 # --- CONFIGURATIONS ---
 
 # Database
-SQLALCHEMY_DATABASE_URL = "sqlite:///./food_redistribute.db"
+SQLALCHEMY_DATABASE_URL = "postgresql://food_redistribute_db_user:7Cghq0HYSnrqKYmb2gx5bCsDDhESqMIZ@dpg-d3h9i9ffte5s73cp43b0-a.singapore-postgres.render.com/food_redistribute_db"
 engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
