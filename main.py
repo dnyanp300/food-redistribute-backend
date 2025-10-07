@@ -1,11 +1,11 @@
 import os
-from dotenv import load_dotenv
-load_dotenv() # This loads the variables from your .env file
 import resend
 import json
 import random
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
+
+from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
@@ -15,20 +15,39 @@ from pydantic import BaseModel, EmailStr
 from sqlalchemy import (or_, Boolean, Column, DateTime, ForeignKey, Integer, String, create_engine)
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
+from authlib.integrations.starlette_client import OAuth
+from starlette.responses import RedirectResponse
+from starlette.requests import Request
+
+load_dotenv() # Load variables from .env file
 
 # --- CONFIGURATIONS ---
 
 # Database
-SQLALCHEMY_DATABASE_URL = "postgresql://food_redistribute_db_user:7Cghq0HYSnrqKYmb2gx5bCsDDhESqMIZ@dpg-d3h9i9ffte5s73cp43b0-a.singapore-postgres.render.com/food_redistribute_db"
+SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./food_redistribute.db")
 engine = create_engine(SQLALCHEMY_DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 # Resend Email
-RESEND_API_KEY = os.getenv("RESEND_API_KEY")  # Replace with your actual key
+RESEND_API_KEY = os.getenv("RESEND_API_KEY")
 resend.api_key = RESEND_API_KEY
 
-# Authentication
+# Google OAuth Credentials
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
+
+# Configure Authlib
+oauth = OAuth()
+oauth.register(
+    name='google',
+    client_id=GOOGLE_CLIENT_ID,
+    client_secret=GOOGLE_CLIENT_SECRET,
+    server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
+    client_kwargs={'scope': 'openid email profile'}
+)
+
+# Standard Authentication
 SECRET_KEY = "a_super_secret_key_for_our_food_project"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
@@ -46,7 +65,6 @@ class User(Base):
     organization_name = Column(String, index=True)
     is_active = Column(Boolean, default=True)
     role = Column(String, default="donor")
-        # Add these two new columns
     otp = Column(String, nullable=True)
     otp_expiry = Column(DateTime(timezone=True), nullable=True)
 
@@ -59,7 +77,7 @@ class SurplusFood(Base):
     expiry_date = Column(DateTime)
     status = Column(String, default="available")
     donor_id = Column(Integer, ForeignKey("users.id"))
-    claimed_by_id = Column(Integer, ForeignKey("users.id"), nullable=True) # FIXED
+    claimed_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
 
 # --- PYDANTIC SCHEMAS ---
@@ -69,12 +87,10 @@ class UserSchema(BaseModel):
     email: EmailStr
     role: str
     organization_name: str | None = None
-
-    class Config:
-        from_attributes = True
+    class Config: from_attributes = True
 
 class OtpVerify(BaseModel):
-    email: EmailStr
+    email: Emailstr
     otp: str
 
 class UserCreate(BaseModel):
@@ -96,10 +112,8 @@ class SurplusFoodSchema(SurplusFoodBase):
     id: int
     donor_id: int
     status: str
-    claimed_by_id: int | None = None # UPDATED
-
-    class Config:
-        from_attributes = True
+    claimed_by_id: int | None = None
+    class Config: from_attributes = True
 
 class Token(BaseModel):
     access_token: str
@@ -186,6 +200,59 @@ Base.metadata.create_all(bind=engine)
 def read_root():
     return {"Status": "API is running"}
 
+# --- Google Authentication Endpoints ---
+
+@app.get('/auth/google')
+async def login_via_google(request: Request):
+    """
+    Redirects the user to Google's login page.
+    """
+    # The URL the user will be sent back to after they approve on Google's site.
+    # This must match one of the "Authorised redirect URIs" in your Google Cloud setup.
+    redirect_uri = request.url_for('auth_google_callback')
+    return await oauth.google.authorize_redirect(request, redirect_uri)
+
+
+@app.get('/auth/google/callback')
+async def auth_google_callback(request: Request, db: Session = Depends(get_db)):
+    """
+    This is the endpoint Google redirects to after a successful login.
+    It handles user creation/login and redirects back to the frontend.
+    """
+    try:
+        token = await oauth.google.authorize_access_token(request)
+        user_info = token.get('userinfo')
+        user_email = user_info['email']
+        
+        # Check if user exists
+        db_user = get_user_by_email(db, email=user_email)
+        
+        # If user doesn't exist, create a new one
+        if not db_user:
+            new_user_data = {
+                "email": user_email,
+                "password": f"oauth_placeholder_{user_email}", # Create a dummy password
+                "role": "donor", # Default role for Google sign-ups
+                "organization_name": user_info.get('name', 'Individual')
+            }
+            db_user = create_user(db, new_user_data)
+
+        # Create a JWT access token for our application
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        app_access_token = create_access_token(
+            data={"sub": db_user.email}, expires_delta=access_token_expires
+        )
+
+        # Redirect back to the frontend with the token
+        frontend_redirect_url = f"https://food-redistribute-app-dnyan.onrender.com/auth/callback?token={app_access_token}"
+        return RedirectResponse(url=frontend_redirect_url)
+
+    except Exception as e:
+        print(f"Error during Google auth callback: {e}")
+        # Redirect to frontend login page with an error message
+        return RedirectResponse(url="https://food-redistribute-app-dnyan.onrender.com/login?error=true")
+    
+    
 # --- Authentication Endpoints ---
 
 @app.post("/auth/register", response_model=UserSchema)
